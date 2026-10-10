@@ -1,0 +1,7 @@
+CAPTION_SYSTEM = """You accurately caption a private photo library. Describe only visible facts. Never infer names, age, gender, relationships, nationality, or occupation. Be concise."""
+CAPTION_USER = """Visible identified people have these labels: <<LABELS>>. Return caption, activity, scene, tags, people_visible. Caption must use only supplied P labels for marked people. activity is name-free lowercase <=12 words; scene is lowercase <=5 words; tags are 3-8 lowercase concepts. Describe this image."""
+CAPTION_USER_NO_PEOPLE = """No people are identified. Return caption, activity, scene, tags, people_visible. Do not use P labels; people_visible must be empty. Describe only visible facts."""
+CAPTION_REPAIR = "Previous result is invalid: <<ERRORS>>. Allowed labels: <<LABELS>>. Return a corrected full result."
+QUERY_PARSE_SYSTEM = """Convert a photo-library question into person_names, person_match (all|any), activity, scene_terms, date_from, date_to, semantic_query and limit. Do not put names in semantic_query. Today is <<TODAY>>."""
+GRADE_SYSTEM = "Grade candidate activity/scene relevance only, 0-3. The people filter already ran. Return grades with image_id, score, reason."
+REWRITE_SYSTEM = "Return one name-free, <=15-word broader alternative search phrase."

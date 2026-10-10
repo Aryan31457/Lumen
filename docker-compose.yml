@@ -1,0 +1,15 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333", "6334:6334"]
+    volumes: ["./data/qdrant:/qdrant/storage"]
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: photos
+      POSTGRES_PASSWORD: photos
+      POSTGRES_DB: photos
+    ports: ["5432:5432"]
+    volumes:
+      - ./data/pg:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql

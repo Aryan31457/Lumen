@@ -1,0 +1,1 @@
+"""Photo Memory application package."""

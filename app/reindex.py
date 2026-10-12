@@ -10,16 +10,18 @@ from .models import embed_doc
 from .qdrant_store import client, ensure_collections
 from .search_text import build_search_text
 from .tokens import presence_template
+from .feedback import ensure_feedback_schema
 
 
 def reindex_captions(image_ids=None):
     """Regenerate local captions and text vectors for already indexed photos."""
     ensure_collections()
+    ensure_feedback_schema()
     with conn() as db, db.cursor() as cur:
         if image_ids:
-            cur.execute("SELECT image_id,path FROM images WHERE status='indexed' AND image_id=ANY(%s) ORDER BY image_id", (image_ids,))
+            cur.execute("SELECT image_id,path FROM images WHERE status='indexed' AND NOT caption_locked AND image_id=ANY(%s) ORDER BY image_id", (image_ids,))
         else:
-            cur.execute("SELECT image_id,path FROM images WHERE status='indexed' ORDER BY image_id")
+            cur.execute("SELECT image_id,path FROM images WHERE status='indexed' AND NOT caption_locked ORDER BY image_id")
         images = cur.fetchall()
 
     updated = skipped = 0

@@ -17,10 +17,13 @@ class Settings(BaseSettings):
     clip_search_weight: float = 0.70
     text_search_weight: float = 0.30
     lexical_search_weight: float = 0.10
+    search_feedback_weight: float = 0.18
+    identity_feedback_positive_weight: float = 1.5
+    identity_feedback_penalty_weight: float = 1.5
     search_candidate_multiplier: int = 10
     search_min_clip_confidence: float = 0.18
     search_min_text_confidence: float = 0.55
-    min_cluster_size: int = 3
+    min_cluster_size: int = 2
     caption_max_new_tokens: int = 32
 
 

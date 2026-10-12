@@ -12,6 +12,7 @@ from ..models import embed_query, clip_text_vec
 from ..qdrant_store import client
 from ..tokens import load_people, render, display, summarise_group
 from ..search_text import search_terms
+from ..feedback import search_adjustments, editable_caption
 
 
 class SearchPlan(BaseModel):
@@ -91,7 +92,10 @@ def retrieve(state):
     limit=min(500,max(40,plan['limit']*settings.search_candidate_multiplier))
     if not query:
         points,_=client().scroll('photos',scroll_filter=filter,limit=limit,with_payload=True)
-        return {'plan':plan,'person_ids':ids,'unknown':state.get('unknown',[]),'candidates':[{'image_id':p.id,'score':0,'payload':p.payload} for p in points]}
+        feedback=search_adjustments(state.get('question',''))
+        candidates=[{'image_id':p.id,'score':feedback.get(p.id,0.0),'payload':p.payload} for p in points]
+        candidates.sort(key=lambda item:item['score'],reverse=True)
+        return {'plan':plan,'person_ids':ids,'unknown':state.get('unknown',[]),'candidates':candidates}
     qdrant=client()
     text_points=qdrant.query_points('photos',query=embed_query(query),using='activity',query_filter=filter,limit=limit,with_payload=True).points
     clip_points=qdrant.query_points('photos',query=clip_text_vec(query),using='clip',query_filter=filter,limit=limit,with_payload=True).points
@@ -113,6 +117,9 @@ def retrieve(state):
         metadata=' '.join(str(payload.get(key,'')) for key in ('search_text','caption','activity','scene','tags'))
         matched=len(terms & search_terms(metadata))/len(terms) if terms else 0.0
         scored[image_id]=scored[image_id]/denominator+lexical_weight*matched
+    for image_id, adjustment in search_adjustments(state.get('question', query)).items():
+        if image_id in scored:
+            scored[image_id] += adjustment
     ordered=sorted(scored,key=scored.get,reverse=True)
     candidates=[{'image_id':image_id,'score':scored[image_id],
                  'clip_score':raw_scores.get(image_id,{}).get('clip',0.0),
@@ -123,7 +130,7 @@ def retrieve(state):
 
 def respond(state):
     if state.get('unknown'):
-        return {'answer':{'message':"I don't know anyone named " + ', '.join(state['unknown']) + ' yet. Name a face group first.','results':[],'low_confidence':False}}
+        return {'answer':{'message':"I don't know anyone named " + ', '.join(state['unknown']) + ' yet. Name a face group first.','results':[],'low_confidence':False,'query':state.get('question','')}}
     candidates=state.get('candidates',[])[:state['plan']['limit']]; ids=[x['image_id'] for x in candidates]; people=load_people()
     with conn() as c, c.cursor() as cur:
         cur.execute('SELECT image_id,path,caption_template,taken_at FROM images WHERE image_id=ANY(%s)',(ids,)); rows={r['image_id']:r for r in cur.fetchall()}
@@ -141,9 +148,9 @@ def respond(state):
                 confidence='medium'
             else:
                 confidence='low'
-            results.append({'image_id':row['image_id'],'path':row['path'],'caption':render(row['caption_template'],people),'people':summarise_group([display(pid,people) for pid in item['payload'].get('person_ids',[])]),'taken_at':row['taken_at'].isoformat() if row['taken_at'] else None,'confidence':confidence})
+            results.append({'image_id':row['image_id'],'path':row['path'],'caption':render(row['caption_template'],people),'editable_caption':editable_caption(row['caption_template'],row['image_id']),'people':summarise_group([display(pid,people) for pid in item['payload'].get('person_ids',[])]),'taken_at':row['taken_at'].isoformat() if row['taken_at'] else None,'confidence':confidence})
     low_confidence=not results or results[0]['confidence']=='low'
-    return {'answer':{'message':f"Found {len(results)} photo(s)." if results else "I couldn't find matching photos.",'results':results,'low_confidence':low_confidence}}
+    return {'answer':{'message':f"Found {len(results)} photo(s)." if results else "I couldn't find matching photos.",'results':results,'low_confidence':low_confidence,'query':state.get('question','')}}
 
 
 def build_query_graph(checkpointer=None):

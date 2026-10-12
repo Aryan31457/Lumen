@@ -35,10 +35,10 @@ def run_cluster_job():
         cluster = [ids[i] for i in indexes]
         distinct_images = {image_ids[i] for i in indexes if image_ids[i] is not None}
         # Repeated detections from one photo are not evidence for an identity.
-        if len(distinct_images) < settings.min_cluster_size:
+        if len(distinct_images) < settings.min_cluster_size or len(distinct_images) != len(indexes):
             continue
 
-        votes = {}
+        votes = {}; penalties = {}
         for idx in indexes:
             hits = client().query_points(
                 "faces", query=vectors[idx].tolist(), limit=5, with_payload=True,
@@ -52,13 +52,18 @@ def run_cluster_job():
                 payload = hit.payload or {}
                 pid, image_id = payload.get("person_id"), payload.get("image_id")
                 if pid is not None and image_id is not None:
-                    votes.setdefault(pid, {}).setdefault(image_id, []).append(hit.score)
+                    if hit.score >= settings.centroid_match_threshold:
+                        weight = settings.identity_feedback_positive_weight if payload.get("human_verified") else 1.0
+                        votes.setdefault(pid, {}).setdefault(image_id, []).append(hit.score * weight)
+                    if hit.score >= settings.centroid_match_threshold * 0.8:
+                        for wrong_pid in payload.get("forbidden_person_ids", []):
+                            penalties.setdefault(wrong_pid, {}).setdefault(image_id, []).append(hit.score)
 
         ranked = sorted(
-            ((sum(max(scores) for scores in images.values()), pid, images)
+            ((sum(max(scores) for scores in images.values()) - settings.identity_feedback_penalty_weight * sum(max(scores) for scores in penalties.get(pid, {}).values()), pid, images)
              for pid, images in votes.items()), reverse=True,
         )
-        if ranked and len(ranked[0][2]) >= 2:
+        if ranked and ranked[0][0] > 0 and len(ranked[0][2]) >= 2:
             best_score, pid, best_images = ranked[0]
             if len(ranked) == 1 or len(ranked[1][2]) < 2 or best_score >= ranked[1][0] * 1.25:
                 matched += 1

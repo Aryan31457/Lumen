@@ -26,19 +26,35 @@ def try_assign(vector):
     points = client().query_points("faces", query=vector, limit=7, with_payload=True,
         query_filter=models.Filter(must=[models.FieldCondition(key="person_id", range=models.Range(gt=0))])).points
     if not points or points[0].score < settings.assign_threshold: return None, points[0].score if points else 0.0
-    votes = {}
+    votes = {}; penalties = {}; verified_matches = {}
     for point in points:
         payload = point.payload or {}
         pid = payload.get("person_id")
         image_id = payload.get("image_id")
         if pid is not None and image_id is not None and point.score >= settings.assign_threshold:
-            votes.setdefault(pid, {})[image_id] = max(point.score, votes.get(pid, {}).get(image_id, 0.0))
+            weight = settings.identity_feedback_positive_weight if payload.get("human_verified") else 1.0
+            weighted_score = point.score * weight
+            votes.setdefault(pid, {})[image_id] = max(weighted_score, votes.get(pid, {}).get(image_id, 0.0))
+            if payload.get("human_verified"):
+                verified_matches.setdefault(pid, set()).add(image_id)
+        if image_id is not None and point.score >= settings.assign_threshold * 0.8:
+            for wrong_pid in payload.get("forbidden_person_ids", []):
+                penalties.setdefault(wrong_pid, {})[image_id] = max(
+                    point.score, penalties.get(wrong_pid, {}).get(image_id, 0.0),
+                )
     # A single near-duplicate or bad embedding must not assign a new face.
-    ranked = sorted(((sum(scores.values()), pid, scores) for pid, scores in votes.items()), reverse=True)
+    ranked = sorted((
+        (sum(scores.values()) - settings.identity_feedback_penalty_weight * sum(penalties.get(pid, {}).values()), pid, scores)
+        for pid, scores in votes.items()
+    ), reverse=True)
     if not ranked:
         return None, points[0].score
     best_score, best_pid, best_images = ranked[0]
-    if len(best_images) < 2:
+    if best_score <= 0:
+        return None, points[0].score
+    if len(best_images) < 2 and not verified_matches.get(best_pid):
+        return None, points[0].score
+    if len(best_images) < 2 and len(ranked) > 1 and ranked[1][0] >= best_score / 1.25:
         return None, points[0].score
     if len(ranked) > 1:
         second_score, _, second_images = ranked[1]

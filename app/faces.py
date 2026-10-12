@@ -28,5 +28,20 @@ def try_assign(vector):
     if not points or points[0].score < settings.assign_threshold: return None, points[0].score if points else 0.0
     votes = {}
     for point in points:
-        if point.score >= settings.assign_threshold: votes[point.payload["person_id"]] = votes.get(point.payload["person_id"], 0) + point.score
-    return max(votes, key=votes.get), points[0].score
+        payload = point.payload or {}
+        pid = payload.get("person_id")
+        image_id = payload.get("image_id")
+        if pid is not None and image_id is not None and point.score >= settings.assign_threshold:
+            votes.setdefault(pid, {})[image_id] = max(point.score, votes.get(pid, {}).get(image_id, 0.0))
+    # A single near-duplicate or bad embedding must not assign a new face.
+    ranked = sorted(((sum(scores.values()), pid, scores) for pid, scores in votes.items()), reverse=True)
+    if not ranked:
+        return None, points[0].score
+    best_score, best_pid, best_images = ranked[0]
+    if len(best_images) < 2:
+        return None, points[0].score
+    if len(ranked) > 1:
+        second_score, _, second_images = ranked[1]
+        if len(second_images) >= 2 and best_score < second_score * 1.25:
+            return None, points[0].score
+    return best_pid, points[0].score

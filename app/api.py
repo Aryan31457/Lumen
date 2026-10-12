@@ -10,7 +10,7 @@ from .graphs.ingest_graph import build_ingest_graph
 from .graphs.query_graph import build_query_graph
 from .clustering import run_cluster_job
 from . import people_service as people
-from .tokens import load_people, display
+from .tokens import load_people, display, render
 
 app=FastAPI(title='Photo Memory'); ingest_graph=build_ingest_graph(); query_graph=build_query_graph()
 class SearchIn(BaseModel): question:str; thread_id:str|None=None
@@ -35,6 +35,13 @@ def get_people():
     with conn() as c, c.cursor() as cur:
         cur.execute("SELECT p.person_id,count(DISTINCT f.image_id) photos,min(f.face_id) cover_face_id FROM people p JOIN faces f ON f.person_id=p.person_id WHERE p.merged_into IS NULL AND NOT p.deleted GROUP BY p.person_id ORDER BY photos DESC"); rows=cur.fetchall()
     return [{**row,'label':display(row['person_id'],named)} for row in rows]
+@app.get('/people/{pid}/images')
+def get_person_images(pid:int):
+    named=load_people()
+    with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT i.image_id,i.caption_template,i.activity_text,i.scene FROM images i JOIN image_people ip USING(image_id) WHERE ip.person_id=%s AND i.status='indexed' ORDER BY i.taken_at DESC NULLS LAST,i.image_id DESC",(pid,))
+        rows=cur.fetchall()
+    return [{**row,'caption':render(row['caption_template'],named) or row['activity_text'] or row['scene'] or 'Photo'} for row in rows]
 @app.patch('/people/{pid}')
 def rename(pid:int,body:RenameIn): people.rename(pid,body.name); return {'ok':True}
 @app.post('/people/merge')

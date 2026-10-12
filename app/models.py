@@ -1,5 +1,4 @@
 from functools import lru_cache
-from langchain.chat_models import init_chat_model
 from .config import settings
 
 
@@ -45,6 +44,14 @@ def embed_query(text): return text_embedder().encode("Represent this sentence fo
 
 
 @lru_cache
-def get_llm(): return init_chat_model(settings.llm_model, model_provider=settings.llm_provider, temperature=0)
-@lru_cache
-def get_vlm(): return init_chat_model(settings.vlm_model, model_provider=settings.vlm_provider, temperature=0)
+def get_caption_model():
+    import torch
+    from transformers import BlipForConditionalGeneration, BlipProcessor
+
+    if not torch.cuda.is_available():
+        torch.set_num_threads(min(4, torch.get_num_threads()))
+    token = settings.hf_token_key or None
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    processor = BlipProcessor.from_pretrained(settings.caption_model_name, token=token)
+    model = BlipForConditionalGeneration.from_pretrained(settings.caption_model_name, token=token)
+    return processor, model.to(device).eval(), device

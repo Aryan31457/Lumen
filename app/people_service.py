@@ -43,6 +43,32 @@ def assign_faces(face_ids, person_id, by="manual"):
     client().set_payload("faces", {"person_id":person_id}, points=face_ids); _push_payloads(affected)
 
 
+def unassign_faces(face_ids):
+    """Clear identity assignments while preserving face placeholders in captions."""
+    if not face_ids:
+        return
+    affected = {}
+    rows = []
+    with conn() as c, c.cursor() as cur:
+        cur.execute("SELECT face_id,image_id,person_id FROM faces WHERE face_id=ANY(%s) AND person_id IS NOT NULL", (face_ids,))
+        rows = cur.fetchall()
+        if not rows:
+            return
+        cur.execute("UPDATE faces SET person_id=NULL,assigned_by=NULL,assign_sim=NULL WHERE face_id=ANY(%s)",
+                    ([row["face_id"] for row in rows],))
+        for image_id in {row["image_id"] for row in rows}:
+            image_rows = [row for row in rows if row["image_id"] == image_id]
+            for row in image_rows:
+                cur.execute("SELECT 1 FROM faces WHERE image_id=%s AND person_id=%s LIMIT 1",
+                            (image_id, row["person_id"]))
+                if cur.fetchone() is None:
+                    _replace(cur, image_id, f"{{{{p:{row['person_id']}}}}}", f"{{{{f:{row['face_id']}}}}}")
+            affected[image_id] = _sync_image(cur, image_id)
+    ids = [row["face_id"] for row in rows]
+    client().set_payload("faces", {"person_id": 0}, points=ids)
+    _push_payloads(affected)
+
+
 def merge(keep, drop):
     if keep == drop: return
     affected = {}

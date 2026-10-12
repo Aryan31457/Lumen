@@ -7,13 +7,9 @@ pydantic>=2
 pydantic-settings
 psycopg[binary]
 qdrant-client
-langchain
 langchain-core
 langgraph
 langsmith
-langchain-anthropic
-langchain-openai
-langchain-ollama
 insightface
 onnxruntime
 opencv-python-headless
@@ -23,4 +19,5 @@ scikit-learn
 torch
 open_clip_torch
 sentence-transformers
+transformers
 pytest

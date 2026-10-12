@@ -10,8 +10,9 @@ from ..faces import detect, try_assign
 from ..captioner import caption_image
 from ..models import clip_image_vec, embed_doc
 from ..people_service import assign_faces
-from ..qdrant_store import client
+from ..qdrant_store import client, ensure_collections
 from ..tokens import presence_template
+from ..search_text import build_search_text
 
 
 def _sha(path):
@@ -22,14 +23,30 @@ def _sha(path):
 
 
 def ingest_path(path):
+    # Keep direct graph/API callers safe as well as the folder CLI on a fresh
+    # Qdrant instance.
+    ensure_collections()
     source=Path(path); digest=_sha(path); Path(settings.image_dir).mkdir(parents=True,exist_ok=True)
     with conn() as c, c.cursor() as cur:
-        cur.execute('SELECT image_id FROM images WHERE sha256=%s',(digest,)); existing=cur.fetchone()
-        if existing: return {'image_id':existing['image_id'],'skipped':True}
-        destination=Path(settings.image_dir)/f'{digest}{source.suffix.lower()}'; shutil.copy2(source,destination)
-        with Image.open(destination) as pil: width,height=pil.size
-        cur.execute("INSERT INTO images(path,sha256,width,height,taken_at,status) VALUES(%s,%s,%s,%s,%s,'new') RETURNING image_id",(str(destination),digest,width,height,datetime.fromtimestamp(destination.stat().st_mtime,timezone.utc)))
-        image_id=cur.fetchone()['image_id']
+        cur.execute('SELECT image_id,status FROM images WHERE sha256=%s',(digest,)); existing=cur.fetchone()
+        if existing and existing['status']=='indexed': return {'image_id':existing['image_id'],'skipped':True}
+        destination=Path(settings.image_dir)/f'{digest}{source.suffix.lower()}'
+        if existing:
+            image_id=existing['image_id']
+            # A failed earlier attempt may have left a database row after its
+            # copied file was removed. Recreate the managed copy before retry.
+            if not destination.exists(): shutil.copy2(source,destination)
+            cur.execute('SELECT face_id FROM faces WHERE image_id=%s',(image_id,)); old_face_ids=[r['face_id'] for r in cur.fetchall()]
+            if old_face_ids: client().delete('faces',points_selector=models.PointIdsList(points=old_face_ids))
+            client().delete('photos',points_selector=models.PointIdsList(points=[image_id]))
+            cur.execute('DELETE FROM faces WHERE image_id=%s',(image_id,))
+            cur.execute('DELETE FROM image_people WHERE image_id=%s',(image_id,))
+            cur.execute("UPDATE images SET status='new',error=NULL WHERE image_id=%s",(image_id,))
+        else:
+            shutil.copy2(source,destination)
+            with Image.open(destination) as pil: width,height=pil.size
+            cur.execute("INSERT INTO images(path,sha256,width,height,taken_at,status) VALUES(%s,%s,%s,%s,%s,'new') RETURNING image_id",(str(destination),digest,width,height,datetime.fromtimestamp(destination.stat().st_mtime,timezone.utc)))
+            image_id=cur.fetchone()['image_id']
     try:
         image, found=detect(str(destination)); tokens=[]; face_ids=[]
         with conn() as c, c.cursor() as cur:
@@ -46,13 +63,14 @@ def ingest_path(path):
         cap=caption_image(image,labels)
         template=cap.caption
         for label,token in label_tokens.items(): template=template.replace(label,token)
+        search_text=build_search_text(template,cap.activity,cap.scene,cap.tags)
         p_tokens=[token for token in tokens if token.startswith('{{p:')]
         with conn() as c, c.cursor() as cur:
             cur.execute("UPDATE images SET caption_template=%s,presence_template=%s,activity_text=%s,scene=%s,tags=%s,status='indexed' WHERE image_id=%s",(template,presence_template(p_tokens),cap.activity,cap.scene,json.dumps(cap.tags),image_id))
             cur.execute('SELECT DISTINCT person_id FROM faces WHERE image_id=%s AND person_id IS NOT NULL',(image_id,)); pids=[r['person_id'] for r in cur.fetchall()]
             for pid in pids: cur.execute('INSERT INTO image_people VALUES(%s,%s) ON CONFLICT DO NOTHING',(image_id,pid))
         with Image.open(destination) as pil: clip=clip_image_vec(pil.convert('RGB'))
-        client().upsert('photos',[models.PointStruct(id=image_id,vector={'activity':embed_doc((cap.activity+' '+cap.scene).strip()),'clip':clip},payload={'image_id':image_id,'person_ids':pids,'tags':cap.tags,'activity':cap.activity,'taken_at_ts':destination.stat().st_mtime})])
+        client().upsert('photos',[models.PointStruct(id=image_id,vector={'activity':embed_doc(search_text),'clip':clip},payload={'image_id':image_id,'person_ids':pids,'tags':cap.tags,'activity':cap.activity,'scene':cap.scene,'caption':template,'search_text':search_text,'taken_at_ts':destination.stat().st_mtime})])
         return {'image_id':image_id,'indexed':True}
     except Exception as exc:
         with conn() as c, c.cursor() as cur: cur.execute("UPDATE images SET status='failed',error=%s WHERE image_id=%s",(str(exc),image_id))
